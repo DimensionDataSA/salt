@@ -346,6 +346,77 @@ def create(vm_):
 
     return ret
 
+def destroy(name, call=None):
+    '''
+    Destroy a node. Will check termination protection and warn if enabled.
+    CLI Example:
+    .. code-block:: bash
+        salt-cloud --destroy mymachine
+    '''
+    conn = get_conn()
+    
+    if call == 'function':
+        raise SaltCloudSystemExit(
+            'The destroy action must be called with -d, --destroy, '
+            '-a or --action.'
+        )
+
+    __utils__['cloud.fire_event'](
+        'event',
+        'destroying instance',
+        'salt/cloud/{0}/destroying'.format(name),
+        args={'name': name},
+        sock_dir=__opts__['sock_dir'],
+        transport=__opts__['transport']
+    )
+
+    data = show_instance(name, call='action')
+    log.debug(data)
+    log.warning('%s will be destroyed', name)
+    
+    node = conn.ex_get_node_by_id(data['id'])
+    try:
+    	if data['state'] != 'stopped':
+    		log.info('First stopping node %s', name)
+    		ret = conn.ex_shutdown_graceful(node)
+    		conn.ex_wait_for_state('stopped',conn.ex_get_node_by_id, 10, 120, data['id'])
+    except Exception as exc:
+    	log.error(
+            'Error stopping %s on DIMENSIONDATA\n\n'
+            'The following exception was thrown by libcloud when trying to '
+            'run the initial deployment: \n%s',
+            name, exc,
+            exc_info_on_loglevel=logging.DEBUG
+        )
+        log.warning('Destroying node %s optimistically', name)
+      	pass
+    
+    try:
+    	ret = conn.destroy_node(node)
+    except Exception as exc:
+        log.error(
+            'Error destroying %s on DIMENSIONDATA\n\n'
+            'The following exception was thrown by libcloud when trying to '
+            'run the initial deployment: \n%s',
+            name, exc,
+            exc_info_on_loglevel=logging.DEBUG
+        )
+        return False
+	
+
+    __utils__['cloud.fire_event'](
+        'event',
+        'destroyed instance',
+        'salt/cloud/{0}/destroyed'.format(name),
+        args={'name': name},
+        sock_dir=__opts__['sock_dir'],
+        transport=__opts__['transport']
+    )
+
+    if __opts__.get('update_cachedir', False) is True:
+        __utils__['cloud.delete_minion_cachedir'](name, __active_provider_name__.split(':')[0], __opts__)
+
+    return ret
 
 def create_lb(kwargs=None, call=None):
     r'''
