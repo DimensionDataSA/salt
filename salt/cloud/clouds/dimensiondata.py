@@ -197,9 +197,11 @@ def create(vm_):
                     if y.name == vm_['vlan']][0]
         except (IndexError, KeyError):
             # Use the first VLAN in the network domain
-            vlan = conn.ex_list_vlans(
-                location=location,
-                network_domain=network_domain)[0]
+            vlan = conn.ex_create_vlan(
+                       network_domain=network_domain,
+                       name=vm_['vlan'],
+                       description='Created by SaltStack',
+                       private_ipv4_prefix_size=24)
 
         kwargs = {
             'name': vm_['name'],
