@@ -634,7 +634,7 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
 
     return {'status': True, 'public_ip': public_ip}
 
-def _get_vlan_state(connection=connection, vlan=vlan):
+def _get_vlan_state(connection, vlan):
     '''
     Check Vlan status
     :param vlan_obj:
