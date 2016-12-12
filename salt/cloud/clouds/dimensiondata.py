@@ -228,8 +228,10 @@ def create(vm_):
     if(ssh_interface(vm_) == 'public_ips'):
         ext_ip_addr = _get_ext_ip()
         if(ext_ip_addr.external_ip == ''):
+            destroy(vm_['name'])
             return False
         if(_setup_remote_salt_access(network_domain, vm_, conn).status is False):
+            destroy(vm_['name'])
             return False
 
     def __query_node_data(vm_, data):
