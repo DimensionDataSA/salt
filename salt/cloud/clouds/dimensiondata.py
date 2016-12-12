@@ -205,8 +205,12 @@ def create(vm_):
                        private_ipv4_base_address='192.168.1.0',
                        description='Created by SaltStack',
                        private_ipv4_prefix_size=24)
-            except DimensionDataAPIException as dexec:
-                if dexec.msg.find('RESOURCE_BUSY'):
+              vlan_operation = salt.utils.cloud.wait_for_fun(
+                  _get_vlan_state,
+                  timeout=config.get_cloud_config_value(
+                      'wait_for_vlan_status_timeout', vm_, __opts__, default=3 * 60),
+                  connection=conn, vlan=vlan)
+            except Exception as exc:
                     log.error(
                         'Error creating VLAN %s on DIMENSIONDATA\n\n'
                         'The following exception was thrown by libcloud when trying to '
@@ -629,6 +633,33 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
         return {'status': False, 'public_ip': ''}
 
     return {'status': True, 'public_ip': public_ip}
+
+def _get_vlan_state(connection=connection, vlan=vlan):
+    '''
+    Check Vlan status
+    :param vlan_obj:
+    :return: bool indicating RUNNING or Not
+    '''
+    running = False
+    try:
+        running = (connection.ex_get_vlan(vlan.id).state == NodeState.RUNNING)
+        log.debug(
+            'Running operation for deploying vlan for %s:\nname: %s\nstate: %s',
+            vm_['vlan'],
+            node['state']
+        )
+    except Exception as err:
+        log.error(
+            'Failed to check Vlan %s state: %s',  vm_['vlan'], err,
+            # Show the traceback if the debug logging level is enabled
+            exc_info_on_loglevel=logging.DEBUG
+        )
+        # Trigger a failure in the wait for fun function
+        return False
+
+    if not running:
+        # Still not running, trigger another iteration
+        return
 
 def _expand_balancer(lb):
     '''
