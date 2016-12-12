@@ -27,6 +27,11 @@ from __future__ import absolute_import
 import logging
 import socket
 import pprint
+import contextlib
+import urllib2
+
+# Import salt libs
+from salt.utils.validate.net import ipv4_addr as _ipv4_addr
 
 # Import libcloud
 try:
@@ -167,6 +172,7 @@ def create(vm_):
     log.info('Creating Cloud VM %s', vm_['name'])
     conn = get_conn()
     rootPw = NodeAuthPassword(vm_['auth'])
+    network_domain = ''
 
     try:
         location = conn.ex_get_location_by_id(vm_['location'])
@@ -214,6 +220,17 @@ def create(vm_):
             exc_info_on_loglevel=logging.DEBUG
         )
         return False
+
+    '''
+    Configure the Dimension Data network for remote/external connectivity from Salt Cloud client
+    '''
+    ext_ip_addr = ''
+    if(ssh_interface(vm_) == 'public_ips'):
+        ext_ip_addr = _get_ext_ip()
+        if(ext_ip_addr.external_ip == ''):
+            return False
+        if(_setup_remote_salt_access(network_domain, vm_, conn).status is False):
+            return False
 
     def __query_node_data(vm_, data):
         running = False
@@ -507,6 +524,79 @@ def create_lb(kwargs=None, call=None):
     )
     return _expand_balancer(lb)
 
+def _setup_remote_salt_access(network_domain, vm_, connection):
+    '''
+    Configure network for public IP and firewall rules
+    :param connection: Provider connection
+    :return: string Public IP
+    '''
+
+    node = show_instance(vm_['name'], 'action')
+    private_ips = node['private_ips']
+
+    try:
+      nat_resp = connection.ex_create_nat_rule(network_domain, private_ips[0])
+      public_ip = nat_resp.external_ip
+    except Exception as exc:
+      log.error(
+          'Error creating NAT rule on DIMENSIONDATA\n\n'
+          'The following exception was thrown by libcloud when trying to '
+          'run the initial deployment: \n%s',
+          vm_['name'], exc,
+          exc_info_on_loglevel=logging.DEBUG
+      )
+      return {'status': False, 'public_ip': ''}
+
+    try:
+        ip_addr_list = connection.ex_get_ip_address_list(network_domain, 'Salt_Minions_SSH_201611')
+        if ip_addr_list:
+          ip_addr_list_create = connection.ex_create_ip_address_list(network_domain, 'Salt_Minions_SSH_201611', \
+                                                                     'Created by SaltStack', 'IPV4', \
+                                                                     DimensionDataIpAddress(begin=private_ips[0]))
+          ip_addr_list_id = ip_addr_list_create.id
+        else:
+          ip_addr_col = ip_addr_list.ip_address_collection
+          ip_addr_list_mod = connection.ex_edit_ip_address_list(ex_ip_address_list=ip_addr_list.id, \
+                                                                ip_address_collection=ip_addr_col.add(DimensionDataIpAddress(begin=private_ips[0])))
+    except Exception as exc:
+        log.error(
+              'Error creating or modifying IP address list on DIMENSIONDATA\n\n'
+              'The following exception was thrown by libcloud when trying to '
+              'run the initial deployment: \n%s',
+              vm_['name'], exc,
+              exc_info_on_loglevel=logging.DEBUG
+        )
+        return {'status': False, 'public_ip': ''}
+
+    try:
+        fw_rules = connection.ex_list_firewall_rules(network_domain)
+        fw_rule = (list(filter(lambda x: x.name == 'Salt_SSH_Minion_FW_Rule_201611', firewall_rules))[0])
+        if fw_rule:
+         fw_resp = connection.ex_create_firewall_rule(network_domain, DimensionDataFirewallRule(name='Salt_SSH_Minion_FW_Rule_201611',\
+                                                                                                network_domain=network_domain,\
+                                                                                                ip_version='IPV4',\
+                                                                                                protocol='TCP',\
+                                                                                                source=DimensionDataFirewallAddress(\
+                                                                                                    ip_address=public_ip),\
+                                                                                                location='FIRST',\
+                                                                                                action='ACCEPT_DECISIVELY',\
+                                                                                                enabled='true',\
+                                                                                                destination=DimensionDataFirewallAddress(\
+                                                                                                    ip_address_list=ip_addr_list_id,\
+                                                                                                    port_begin='22')),\
+                                                                                                'FIRST')
+
+    except Exception as exc:
+        log.error(
+              'Error creating Firewall Rule on DIMENSIONDATA\n\n'
+              'The following exception was thrown by libcloud when trying to '
+              'run the initial deployment: \n%s',
+              vm_['name'], exc,
+              exc_info_on_loglevel=logging.DEBUG
+        )
+        return {'status': False, 'public_ip': ''}
+
+    return {'status': True, 'public_ip': public_ip}
 
 def _expand_balancer(lb):
     '''
@@ -515,6 +605,34 @@ def _expand_balancer(lb):
     ret = {}
     ret.update(lb.__dict__)
     return ret
+
+def _get_ext_ip():
+    '''
+    Return external IP of the host (master) executing salt-cloud
+    :return: json external IP
+    '''
+    check_ips = ('http://ipecho.net/plain',
+                 'http://v4.ident.me')
+
+    for url in check_ips:
+        try:
+            with contextlib.closing(urllib2.urlopen(url, timeout=3)) as req:
+                ip_ = req.read().strip()
+                if not _ipv4_addr(ip_):
+                    continue
+            return {'external_ip': ip_}
+        except (urllib2.HTTPError,
+                urllib2.URLError,
+                socket.timeout):
+            log.error(
+                'Error detecting external IP address\n\n'
+                'The following exception was thrown during checking external IP of this machine ',
+                urllib2.HTTPError, urllib2.URLError, socket.timeout,
+                exc_info_on_loglevel=logging.DEBUG
+            )
+            continue
+    # Return an empty value as a last resort
+    return {'external_ip': []}
 
 
 def preferred_ip(vm_, ips):
