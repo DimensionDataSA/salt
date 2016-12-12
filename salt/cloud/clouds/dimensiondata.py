@@ -200,6 +200,7 @@ def create(vm_):
             vlan = conn.ex_create_vlan(
                        network_domain=network_domain,
                        name=vm_['vlan'],
+                       private_ipv4_base_address='192.168.1.0',
                        description='Created by SaltStack',
                        private_ipv4_prefix_size=24)
 
