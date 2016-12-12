@@ -247,6 +247,22 @@ def create(vm_):
         timeout=config.get_cloud_config_value(
             'wait_for_firewall_config_timeout', vm_, __opts__, default=2*60))
 
+    def _configure_network(**kwargs):
+        '''
+        Configure the Dimension Data network for remote/external connectivity from Salt Cloud client
+        '''
+        conn = kwargs['conn']
+        vm_ = kwargs['vm_']
+
+        if (ssh_interface(vm_) == 'public_ips'):
+            ext_ip_addr = _get_ext_ip()
+            if (ext_ip_addr.external_ip == ''):
+                destroy(vm_['name'])
+                return False
+            if (_setup_remote_salt_access(network_domain, vm_, conn).status is False):
+                destroy(vm_['name'])
+                return False
+
     data = salt.utils.cloud.wait_for_ip(
         __query_node_data,
         update_args=(vm_, data),
@@ -547,18 +563,6 @@ def create_lb(kwargs=None, call=None):
     )
     return _expand_balancer(lb)
 
-def _configure_network():
-      '''
-      Configure the Dimension Data network for remote/external connectivity from Salt Cloud client
-      '''
-      if(ssh_interface(vm_) == 'public_ips'):
-        ext_ip_addr = _get_ext_ip()
-        if(ext_ip_addr.external_ip == ''):
-            destroy(vm_['name'])
-            return False
-        if(_setup_remote_salt_access(network_domain, vm_, conn).status is False):
-            destroy(vm_['name'])
-            return False
 
 def _setup_remote_salt_access(network_domain, vm_, connection):
     '''
