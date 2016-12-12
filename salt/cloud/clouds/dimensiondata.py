@@ -535,7 +535,7 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
 
     node = show_instance(vm_['name'], 'action')
     private_ips = node['private_ips']
-
+    log.info('Creating NAT Rule for VM {0}'.format(vm_['name']))
     try:
       nat_resp = connection.ex_create_nat_rule(network_domain, private_ips[0])
       public_ip = nat_resp.external_ip
@@ -551,6 +551,7 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
 
     try:
         ip_addr_list = connection.ex_get_ip_address_list(network_domain, 'Salt_Minions_SSH_201611')
+        log.info('Creating IP Address List for VM {0}'.format(vm_['name']))
         if ip_addr_list:
           ip_addr_list_create = connection.ex_create_ip_address_list(network_domain, 'Salt_Minions_SSH_201611', \
                                                                      'Created by SaltStack', 'IPV4', \
@@ -571,6 +572,7 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
         return {'status': False, 'public_ip': ''}
 
     try:
+        log.info('Creating Firewall Rules for VM {0}'.format(vm_['name']))
         fw_rules = connection.ex_list_firewall_rules(network_domain)
         fw_rule = (list(filter(lambda x: x.name == 'Salt_SSH_Minion_FW_Rule_201611', firewall_rules))[0])
         if fw_rule:
@@ -613,6 +615,8 @@ def _get_ext_ip():
     Return external IP of the host (master) executing salt-cloud
     :return: json external IP
     '''
+    log.info('Determining external IP...')
+
     check_ips = ('http://ipecho.net/plain',
                  'http://v4.ident.me')
 
