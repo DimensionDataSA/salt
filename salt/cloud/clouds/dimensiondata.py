@@ -35,6 +35,7 @@ from salt.utils.validate.net import ipv4_addr as _ipv4_addr
 
 # Import libcloud
 try:
+    from libcloud.common.dimensiondata import DimensionDataAPIException
     from libcloud.compute.base import NodeState
     from libcloud.compute.base import NodeAuthPassword
     from libcloud.compute.types import Provider
@@ -197,12 +198,23 @@ def create(vm_):
                     if y.name == vm_['vlan']][0]
         except (IndexError, KeyError):
             # Use the first VLAN in the network domain
-            vlan = conn.ex_create_vlan(
+            try:
+              vlan = conn.ex_create_vlan(
                        network_domain=network_domain,
                        name=vm_['vlan'],
                        private_ipv4_base_address='192.168.1.0',
                        description='Created by SaltStack',
                        private_ipv4_prefix_size=24)
+            except DimensionDataAPIException as dexec:
+                if(dexec.code != 'RESOURCE_BUSY'):
+                    log.error(
+                        'Error creating VLAN %s on DIMENSIONDATA\n\n'
+                        'The following exception was thrown by libcloud when trying to '
+                        'run the initial deployment: \n%s',
+                        vm_['vlan'], exc,
+                        exc_info_on_loglevel=logging.DEBUG
+                    )
+                    return False
 
         kwargs = {
             'name': vm_['name'],
