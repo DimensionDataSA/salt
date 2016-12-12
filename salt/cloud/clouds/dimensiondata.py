@@ -206,7 +206,7 @@ def create(vm_):
                        description='Created by SaltStack',
                        private_ipv4_prefix_size=24)
             except DimensionDataAPIException as dexec:
-                if(dexec.code != 'RESOURCE_BUSY'):
+                if dexec.msg.find('RESOURCE_BUSY'):
                     log.error(
                         'Error creating VLAN %s on DIMENSIONDATA\n\n'
                         'The following exception was thrown by libcloud when trying to '
