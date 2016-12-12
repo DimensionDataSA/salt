@@ -209,7 +209,7 @@ def create(vm_):
                   _get_vlan_state,
                   timeout=config.get_cloud_config_value(
                       'wait_for_vlan_status_timeout', vm_, __opts__, default=3 * 60),
-                  kwargs=(conn, vlan))
+                   connection=conn, vlan=vlan)
             except Exception as exc:
                     log.error(
                         'Error creating VLAN %s on DIMENSIONDATA\n\n'
@@ -634,23 +634,27 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
 
     return {'status': True, 'public_ip': public_ip}
 
-def _get_vlan_state(connection, vlan):
+def _get_vlan_state(**kwargs):
     '''
     Check Vlan status
     :param vlan_obj:
     :return: bool indicating RUNNING or Not
     '''
     running = False
+    connection = kwargs['connection']
+    vlan = kwargs['vlan']
+
     try:
-        running = (connection.ex_get_vlan(vlan.id).state == NodeState.RUNNING)
+	state= connection.ex_get_vlan(vlan.id).status
+        running = (state == NodeState.RUNNING)
         log.debug(
-            'Running operation for deploying vlan for %s:\nname: %s\nstate: %s',
-            vm_['vlan'],
-            node['state']
+            'Running operation for deploying vlan \nname:%s\nstate: %s',
+            vlan.name,
+            state
         )
     except Exception as err:
         log.error(
-            'Failed to check Vlan %s state: %s',  vm_['vlan'], err,
+            'Failed to check Vlan %s state: %s',  vlan.name, state, err,
             # Show the traceback if the debug logging level is enabled
             exc_info_on_loglevel=logging.DEBUG
         )
