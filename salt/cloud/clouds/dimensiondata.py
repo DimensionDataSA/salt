@@ -223,18 +223,25 @@ def create(vm_):
         )
         return False
 
-    '''
-    Configure the Dimension Data network for remote/external connectivity from Salt Cloud client
-    '''
-    ext_ip_addr = ''
-    if(ssh_interface(vm_) == 'public_ips'):
-        ext_ip_addr = _get_ext_ip()
-        if(ext_ip_addr.external_ip == ''):
-            destroy(vm_['name'])
-            return False
-        if(_setup_remote_salt_access(network_domain, vm_, conn).status is False):
-            destroy(vm_['name'])
-            return False
+    data = salt.utils.cloud.wait_for_fun(
+        _configure_network,
+        timeout=config.get_cloud_config_value(
+            'wait_for_ip_timeout', vm_, __opts__, default=25 * 60),
+        interval=config.get_cloud_config_value(
+            'wait_for_ip_interval', vm_, __opts__, default=30),
+        max_failures=config.get_cloud_config_value(
+            'wait_for_ip_max_failures', vm_, __opts__, default=60),)
+
+    data = salt.utils.cloud.wait_for_ip(
+        __query_node_data,
+        update_args=(vm_, data),
+        timeout=config.get_cloud_config_value(
+            'wait_for_ip_timeout', vm_, __opts__, default=25 * 60),
+        interval=config.get_cloud_config_value(
+            'wait_for_ip_interval', vm_, __opts__, default=30),
+        max_failures=config.get_cloud_config_value(
+            'wait_for_ip_max_failures', vm_, __opts__, default=60),
+    )
 
     def __query_node_data(vm_, data):
         running = False
@@ -290,9 +297,6 @@ def create(vm_):
             data.public_ips = public
             if ssh_interface(vm_) != 'private_ips':
                 return data
-
-        log.debug('DATA')
-        log.debug(data)
 
     try:
         data = salt.utils.cloud.wait_for_ip(
@@ -527,6 +531,19 @@ def create_lb(kwargs=None, call=None):
         transport=__opts__['transport']
     )
     return _expand_balancer(lb)
+
+def _configure_network():
+      '''
+      Configure the Dimension Data network for remote/external connectivity from Salt Cloud client
+      '''
+      if(ssh_interface(vm_) == 'public_ips'):
+        ext_ip_addr = _get_ext_ip()
+        if(ext_ip_addr.external_ip == ''):
+            destroy(vm_['name'])
+            return False
+        if(_setup_remote_salt_access(network_domain, vm_, conn).status is False):
+            destroy(vm_['name'])
+            return False
 
 def _setup_remote_salt_access(network_domain, vm_, connection):
     '''
