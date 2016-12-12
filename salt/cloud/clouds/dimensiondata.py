@@ -29,6 +29,7 @@ import socket
 import pprint
 import contextlib
 import urllib2
+import time
 
 # Import salt libs
 from salt.utils.validate.net import ipv4_addr as _ipv4_addr
@@ -205,11 +206,12 @@ def create(vm_):
                        private_ipv4_base_address='192.168.1.0',
                        description='Created by SaltStack',
                        private_ipv4_prefix_size=24)
-              vlan_operation = salt.utils.cloud.wait_for_fun(
-                  _get_vlan_state,
-                  timeout=config.get_cloud_config_value(
-                      'wait_for_vlan_status_timeout', vm_, __opts__, default=3 * 60),
-                   connection=conn, vlan=vlan)
+              #vlan_operation = salt.utils.cloud.wait_for_fun(
+               #   _get_vlan_state,
+               #   timeout=config.get_cloud_config_value(
+               #       'wait_for_vlan_status_timeout', vm_, __opts__, default=3 * 60),
+               #    connection=conn, vlan=vlan)
+              _wait_for_async(conn, vlan)
             except Exception as exc:
                     log.error(
                         'Error creating VLAN %s on DIMENSIONDATA\n\n'
@@ -664,6 +666,38 @@ def _get_vlan_state(**kwargs):
     if not running:
         # Still not running, trigger another iteration
         return
+
+# Helper function for mcp tests
+def _wait_for_async(conn, obj):
+    '''
+    Helper function for azure tests
+    '''
+    count = 0
+    log.debug('Waiting for asynchronous operation to complete')
+    not_running = True
+
+    while not_running:
+        count = count + 1
+        if count > 18:
+            raise ValueError('Timed out waiting for async operation to complete.')
+        time.sleep(10)
+        try:
+            state = conn.ex_get_vlan(obj.id).status
+            not_running = not (state == NodeState.RUNNING)
+            log.debug(
+                'Running operation for deploying resource \nname:%s\nstate: %s',
+                obj.name,
+                state
+            )
+
+        except Exception as err:
+            log.error(
+                'Fatal excepting while while checking resource %s state: %s', obj.name, state, err,
+                # Show the traceback if the debug logging level is enabled
+                exc_info_on_loglevel=logging.DEBUG
+            )
+            # Trigger a failure in the wait for fun function
+            return False
 
 def _expand_balancer(lb):
     '''
