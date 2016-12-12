@@ -689,6 +689,8 @@ def _wait_for_async(conn, obj):
                 obj.name,
                 state
             )
+	    if not not_running:
+              break
 
         except Exception as err:
             log.error(
@@ -698,6 +700,8 @@ def _wait_for_async(conn, obj):
             )
             # Trigger a failure in the wait for fun function
             return False
+
+    return
 
 def _expand_balancer(lb):
     '''
