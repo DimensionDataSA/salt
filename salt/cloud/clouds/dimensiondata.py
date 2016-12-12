@@ -239,11 +239,7 @@ def create(vm_):
     data = salt.utils.cloud.wait_for_fun(
         _configure_network,
         timeout=config.get_cloud_config_value(
-            'wait_for_ip_timeout', vm_, __opts__, default=25 * 60),
-        interval=config.get_cloud_config_value(
-            'wait_for_ip_interval', vm_, __opts__, default=30),
-        max_failures=config.get_cloud_config_value(
-            'wait_for_ip_max_failures', vm_, __opts__, default=60),)
+            'wait_for_firewall_config_timeout', vm_, __opts__, default=2*60))
 
     data = salt.utils.cloud.wait_for_ip(
         __query_node_data,
