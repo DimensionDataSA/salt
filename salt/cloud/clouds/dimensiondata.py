@@ -209,7 +209,7 @@ def create(vm_):
                   _get_vlan_state,
                   timeout=config.get_cloud_config_value(
                       'wait_for_vlan_status_timeout', vm_, __opts__, default=3 * 60),
-                  connection=conn, vlan=vlan)
+                  kwargs=(conn, vlan))
             except Exception as exc:
                     log.error(
                         'Error creating VLAN %s on DIMENSIONDATA\n\n'
