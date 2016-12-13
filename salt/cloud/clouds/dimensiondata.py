@@ -245,23 +245,8 @@ def create(vm_):
     data = salt.utils.cloud.wait_for_fun(
         _configure_network,
         timeout=config.get_cloud_config_value(
-            'wait_for_firewall_config_timeout', vm_, __opts__, default=2*60))
-
-    def _configure_network(**kwargs):
-        '''
-        Configure the Dimension Data network for remote/external connectivity from Salt Cloud client
-        '''
-        conn = kwargs['conn']
-        vm_ = kwargs['vm_']
-
-        if (ssh_interface(vm_) == 'public_ips'):
-            ext_ip_addr = _get_ext_ip()
-            if (ext_ip_addr.external_ip == ''):
-                destroy(vm_['name'])
-                return False
-            if (_setup_remote_salt_access(network_domain, vm_, conn).status is False):
-                destroy(vm_['name'])
-                return False
+            'wait_for_firewall_config_timeout', vm_, __opts__, default=2*60),
+	    conn=conn, vm_=vm_, network_domain=network_domain)
 
     data = salt.utils.cloud.wait_for_ip(
         __query_node_data,
@@ -563,6 +548,22 @@ def create_lb(kwargs=None, call=None):
     )
     return _expand_balancer(lb)
 
+def _configure_network(**kwargs):
+        '''
+        Configure the Dimension Data network for remote/external connectivity from Salt Cloud client
+        '''
+        conn = kwargs['conn']
+        vm_ = kwargs['vm_']
+        network_domain = kwargs['network_domain']
+
+        if (ssh_interface(vm_) == 'public_ips'):
+            ext_ip_addr = _get_ext_ip()
+            if (ext_ip_addr['external_ip'] == ''):
+                destroy(vm_['name'])
+                return False
+            if (_setup_remote_salt_access(network_domain, vm_, conn)['status'] is False):
+                destroy(vm_['name'])
+                return False
 
 def _setup_remote_salt_access(network_domain, vm_, connection):
     '''
@@ -573,13 +574,14 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
 
     node = show_instance(vm_['name'], 'action')
     private_ips = node['private_ips']
-    log.info('Creating NAT Rule for VM {0}'.format(vm_['name']))
+    log.info('Creating NAT Rule for VM {0} with IP {1}'.format(vm_['name'], private_ips[0]))
     try:
-      nat_resp = connection.ex_create_nat_rule(network_domain, private_ips[0])
+      nat_resp = connection.ex_create_nat_rule(network_domain, private_ips[0], '')
+      _wait_for_async(connection, nat_resp)
       public_ip = nat_resp.external_ip
     except Exception as exc:
       log.error(
-          'Error creating NAT rule on DIMENSIONDATA\n\n'
+          'Error creating NAT rule on DIMENSIONDATA for VM %s\n\n'
           'The following exception was thrown by libcloud when trying to '
           'run the initial deployment: \n%s',
           vm_['name'], exc,
@@ -594,14 +596,16 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
           ip_addr_list_create = connection.ex_create_ip_address_list(network_domain, 'Salt_Minions_SSH_201611', \
                                                                      'Created by SaltStack', 'IPV4', \
                                                                      DimensionDataIpAddress(begin=private_ips[0]))
-          ip_addr_list_id = ip_addr_list_create.id
+          _wait_for_async(connection, ip_addr_list_create)
+	  ip_addr_list_id = ip_addr_list_create.id
         else:
-          ip_addr_col = ip_addr_list.ip_address_collection
+          ip_addr_col = ip_addr_list['ip_address_collection']
           ip_addr_list_mod = connection.ex_edit_ip_address_list(ex_ip_address_list=ip_addr_list.id, \
                                                                 ip_address_collection=ip_addr_col.add(DimensionDataIpAddress(begin=private_ips[0])))
+          _wait_for_async(connection, ip_addr_list_mod)
     except Exception as exc:
         log.error(
-              'Error creating or modifying IP address list on DIMENSIONDATA\n\n'
+              'Error creating or modifying IP address list on DIMENSIONDATA for VM %s\n\n'
               'The following exception was thrown by libcloud when trying to '
               'run the initial deployment: \n%s',
               vm_['name'], exc,
@@ -628,9 +632,10 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
                                                                                                     port_begin='22')),\
                                                                                                 'FIRST')
 
+         _wait_for_async(connection, fw_resp)
     except Exception as exc:
         log.error(
-              'Error creating Firewall Rule on DIMENSIONDATA\n\n'
+              'Error creating Firewall Rule on DIMENSIONDATA for VM %s\n\n'
               'The following exception was thrown by libcloud when trying to '
               'run the initial deployment: \n%s',
               vm_['name'], exc,
@@ -687,15 +692,13 @@ def _wait_for_async(conn, obj):
         time.sleep(10)
         try:
             state = conn.ex_get_vlan(obj.id).status
-            not_running = not (state == NodeState.RUNNING)
+            not_running = not (state == 'NORMAL')
             log.debug(
                 'Running operation for deploying resource \nname:%s\nstate: %s',
                 obj.name,
                 state
             )
-	    if not not_running:
-              break
-
+	  
         except Exception as err:
             log.error(
                 'Fatal excepting while while checking resource %s state: %s', obj.name, state, err,
@@ -731,6 +734,7 @@ def _get_ext_ip():
                 ip_ = req.read().strip()
                 if not _ipv4_addr(ip_):
                     continue
+	    log.info('Found external IP {0}'.format(ip_))
             return {'external_ip': ip_}
         except (urllib2.HTTPError,
                 urllib2.URLError,
