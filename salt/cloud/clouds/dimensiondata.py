@@ -577,7 +577,7 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
     log.info('Creating NAT Rule for VM {0} with IP {1}'.format(vm_['name'], private_ips[0]))
     try:
       nat_resp = connection.ex_create_nat_rule(network_domain, private_ips[0], '')
-      _wait_for_async(connection, nat_resp)
+      connection.ex_wait_for_state('NORMAL', connection.ex_get_nat_rule, poll_interval=6, timeout=60, network_domain, nat_resp.id)
       public_ip = nat_resp.external_ip
     except Exception as exc:
       log.error(
@@ -596,13 +596,15 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
           ip_addr_list_create = connection.ex_create_ip_address_list(network_domain, 'Salt_Minions_SSH_201611', \
                                                                      'Created by SaltStack', 'IPV4', \
                                                                      DimensionDataIpAddress(begin=private_ips[0]))
-          _wait_for_async(connection, ip_addr_list_create)
-	  ip_addr_list_id = ip_addr_list_create.id
+          connection.ex_wait_for_state('NORMAL', connection.ex_get_ip_address_list, poll_interval=6, timeout=60,
+                                       ex_network_domain=network_domain, ex_ip_address_list_name='Salt_Minions_SSH_201611')
+          ip_addr_list_id = ip_addr_list_create.id
         else:
           ip_addr_col = ip_addr_list['ip_address_collection']
           ip_addr_list_mod = connection.ex_edit_ip_address_list(ex_ip_address_list=ip_addr_list.id, \
                                                                 ip_address_collection=ip_addr_col.add(DimensionDataIpAddress(begin=private_ips[0])))
-          _wait_for_async(connection, ip_addr_list_mod)
+          connection.ex_wait_for_state('NORMAL', connection.ex_get_ip_address_list, poll_interval=6, timeout=60,
+                                       ex_network_domain=network_domain, ex_ip_address_list_name='Salt_Minions_SSH_201611')
     except Exception as exc:
         log.error(
               'Error creating or modifying IP address list on DIMENSIONDATA for VM %s\n\n'
@@ -632,7 +634,9 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
                                                                                                     port_begin='22')),\
                                                                                                 'FIRST')
 
-         _wait_for_async(connection, fw_resp)
+         connection.ex_wait_for_state('NORMAL', connection.ex_get_firewall_rule, poll_interval=6, timeout=60,
+                                      network_domain=network_domain,
+                                      rule_id=fw_resp.id)
     except Exception as exc:
         log.error(
               'Error creating Firewall Rule on DIMENSIONDATA for VM %s\n\n'
@@ -709,6 +713,7 @@ def _wait_for_async(conn, obj):
             return False
 
     return
+
 
 def _expand_balancer(lb):
     '''
