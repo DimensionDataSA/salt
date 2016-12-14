@@ -37,6 +37,9 @@ from salt.utils.validate.net import ipv4_addr as _ipv4_addr
 # Import libcloud
 try:
     from libcloud.common.dimensiondata import DimensionDataAPIException
+    from libcloud.common.dimensiondata import DimensionDataIpAddress
+    from libcloud.common.dimensiondata import DimensionDataFirewallRule
+    from libcloud.common.dimensiondata import DimensionDataFirewallAddress
     from libcloud.compute.base import NodeState
     from libcloud.compute.base import NodeAuthPassword
     from libcloud.compute.types import Provider
@@ -242,22 +245,7 @@ def create(vm_):
         )
         return False
 
-    data = salt.utils.cloud.wait_for_fun(
-        _configure_network,
-        timeout=config.get_cloud_config_value(
-            'wait_for_firewall_config_timeout', vm_, __opts__, default=2*60),
-	    conn=conn, vm_=vm_, network_domain=network_domain)
-
-    data = salt.utils.cloud.wait_for_ip(
-        __query_node_data,
-        update_args=(vm_, data),
-        timeout=config.get_cloud_config_value(
-            'wait_for_ip_timeout', vm_, __opts__, default=25 * 60),
-        interval=config.get_cloud_config_value(
-            'wait_for_ip_interval', vm_, __opts__, default=30),
-        max_failures=config.get_cloud_config_value(
-            'wait_for_ip_max_failures', vm_, __opts__, default=60),
-    )
+    _configure_network(conn=conn, vm_=vm_, network_domain=network_domain)
 
     def __query_node_data(vm_, data):
         running = False
@@ -295,6 +283,9 @@ def create(vm_):
                 private_ip = preferred_ip(vm_, [private_ip])
                 if salt.utils.cloud.is_public_ip(private_ip):
                     log.warning('%s is a public IP', private_ip)
+                    log.warning(
+                        'Public IP address was not ready when we last checked.  Appending public IP address now.'
+                    )
                     data.public_ips.append(private_ip)
                 else:
                     log.warning('%s is a private IP', private_ip)
@@ -556,14 +547,21 @@ def _configure_network(**kwargs):
         vm_ = kwargs['vm_']
         network_domain = kwargs['network_domain']
 
-        if (ssh_interface(vm_) == 'public_ips'):
+        if (str(vm_['remote_client']).lower()  == 'true'):
             ext_ip_addr = _get_ext_ip()
             if (ext_ip_addr['external_ip'] == ''):
+              try:
+                # It might be already up, let's destroy it!
                 destroy(vm_['name'])
-                return False
+              except Exception as exc:
+                raise SaltCloudSystemExit(str(exc))
             if (_setup_remote_salt_access(network_domain, vm_, conn)['status'] is False):
+              try:
+                # It might be already up, let's destroy it!
                 destroy(vm_['name'])
-                return False
+              except Exception as exc:
+                raise SaltCloudSystemExit(str(exc))
+        return
 
 def _setup_remote_salt_access(network_domain, vm_, connection):
     '''
@@ -571,40 +569,60 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
     :param connection: Provider connection
     :return: string Public IP
     '''
-
     node = show_instance(vm_['name'], 'action')
     private_ips = node['private_ips']
-    log.info('Creating NAT Rule for VM {0} with IP {1}'.format(vm_['name'], private_ips[0]))
+    log.debug('Creating NAT Rule for VM {0} with IP {1}'.format(vm_['name'], private_ips[0]))
     try:
       nat_resp = connection.ex_create_nat_rule(network_domain, private_ips[0], '')
-      connection.ex_wait_for_state('NORMAL', connection.ex_get_nat_rule, poll_interval=6, timeout=60, network_domain, nat_resp.id)
+      connection.ex_wait_for_state('NORMAL', connection.ex_get_nat_rule, poll_interval=6, timeout=60, network_domain=network_domain, rule_id=nat_resp.id)
       public_ip = nat_resp.external_ip
     except Exception as exc:
-      log.error(
-          'Error creating NAT rule on DIMENSIONDATA for VM %s\n\n'
-          'The following exception was thrown by libcloud when trying to '
-          'run the initial deployment: \n%s',
-          vm_['name'], exc,
-          exc_info_on_loglevel=logging.DEBUG
-      )
-      return {'status': False, 'public_ip': ''}
+      exc_to_str = str(exc)
+      exc_str = 'NO_IP_ADDRESS_AVAILABLE'
+      if exc_to_str.find(exc_str) != -1:
+	try:
+          log.debug('Adding Public IP block')
+	  public_ip_rsp = connection.ex_add_public_ip_block_to_network_domain(network_domain)
+          if(public_ip_rsp.status == 'NORMAL'):
+            nat_resp = connection.ex_create_nat_rule(network_domain, private_ips[0], '')
+            log.debug('Retry adding NAT rule')
+            connection.ex_wait_for_state('NORMAL', connection.ex_get_nat_rule, poll_interval=6, timeout=60, network_domain=network_domain, rule_id=nat_resp.id)
+            public_ip = nat_resp.external_ip
+	except Exception as exc:
+	  log.error(
+            'Error adding  NAT rule on DIMENSIONDATA for VM %s\n\n'
+            'The following exception was thrown by libcloud when trying to '
+            'run the initial deployment: \n%s',
+            vm_['name'], exc,
+            exc_info_on_loglevel=logging.DEBUG
+          )
+      else:
+        log.error(
+            'Error creating NAT rule on DIMENSIONDATA for VM %s\n\n'
+            'The following exception was thrown by libcloud when trying to '
+            'run the initial deployment: \n%s',
+            vm_['name'], exc,
+            exc_info_on_loglevel=logging.DEBUG
+        )
+        exc_to_str = str(exc)
+        exc_str = 'NO_IP_ADDRESS_AVAILABLE'
+        if exc_to_str.find(exc_str) != -1:
+          raise SaltCloudSystemExit(str(exc))
 
     try:
         ip_addr_list = connection.ex_get_ip_address_list(network_domain, 'Salt_Minions_SSH_201611')
-        log.info('Creating IP Address List for VM {0}'.format(vm_['name']))
-        if ip_addr_list:
+        log.debug('Creating IP Address List for VM {0}'.format(vm_['name']))
+        if not ip_addr_list:
           ip_addr_list_create = connection.ex_create_ip_address_list(network_domain, 'Salt_Minions_SSH_201611', \
                                                                      'Created by SaltStack', 'IPV4', \
-                                                                     DimensionDataIpAddress(begin=private_ips[0]))
-          connection.ex_wait_for_state('NORMAL', connection.ex_get_ip_address_list, poll_interval=6, timeout=60,
-                                       ex_network_domain=network_domain, ex_ip_address_list_name='Salt_Minions_SSH_201611')
-          ip_addr_list_id = ip_addr_list_create.id
+                                                                     [DimensionDataIpAddress(begin=nat_resp.internal_ip)])
         else:
-          ip_addr_col = ip_addr_list['ip_address_collection']
-          ip_addr_list_mod = connection.ex_edit_ip_address_list(ex_ip_address_list=ip_addr_list.id, \
-                                                                ip_address_collection=ip_addr_col.add(DimensionDataIpAddress(begin=private_ips[0])))
-          connection.ex_wait_for_state('NORMAL', connection.ex_get_ip_address_list, poll_interval=6, timeout=60,
-                                       ex_network_domain=network_domain, ex_ip_address_list_name='Salt_Minions_SSH_201611')
+          ip_addr_list = connection.ex_get_ip_address_list(network_domain, 'Salt_Minions_SSH_201611')
+          ip_addr_col = ip_addr_list[0].ip_address_collection
+          ip_addr_col.append(DimensionDataIpAddress(begin=nat_resp.internal_ip))
+          ip_addr_list_mod = connection.ex_edit_ip_address_list(ex_ip_address_list=ip_addr_list[0].id, description='Generated by SaltStack',\
+                                                                ip_address_collection=ip_addr_col)
+          ip_addr_list_id = [item[0] for item in ip_addr_list_mod].id
     except Exception as exc:
         log.error(
               'Error creating or modifying IP address list on DIMENSIONDATA for VM %s\n\n'
@@ -613,30 +631,41 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
               vm_['name'], exc,
               exc_info_on_loglevel=logging.DEBUG
         )
-        return {'status': False, 'public_ip': ''}
+        raise SaltCloudSystemExit(str(exc))
 
     try:
-        log.info('Creating Firewall Rules for VM {0}'.format(vm_['name']))
+        log.debug('Creating Firewall Rules for VM {0}'.format(vm_['name']))
         fw_rules = connection.ex_list_firewall_rules(network_domain)
-        fw_rule = (list(filter(lambda x: x.name == 'Salt_SSH_Minion_FW_Rule_201611', firewall_rules))[0])
-        if fw_rule:
-         fw_resp = connection.ex_create_firewall_rule(network_domain, DimensionDataFirewallRule(name='Salt_SSH_Minion_FW_Rule_201611',\
-                                                                                                network_domain=network_domain,\
-                                                                                                ip_version='IPV4',\
-                                                                                                protocol='TCP',\
-                                                                                                source=DimensionDataFirewallAddress(\
-                                                                                                    ip_address=public_ip),\
-                                                                                                location='FIRST',\
-                                                                                                action='ACCEPT_DECISIVELY',\
-                                                                                                enabled='true',\
-                                                                                                destination=DimensionDataFirewallAddress(\
-                                                                                                    ip_address_list=ip_addr_list_id,\
-                                                                                                    port_begin='22')),\
-                                                                                                'FIRST')
+        fw_rule = filter(lambda x: x.name == 'Salt_SSH_Minion_FW_Rule_201611', fw_rules)
+        if not fw_rule:
+         ip_addr_list = connection.ex_get_ip_address_list(network_domain, 'Salt_Minions_SSH_201611')
+         fw_resp = connection.ex_create_firewall_rule(network_domain, DimensionDataFirewallRule(id=None, 
+												name='Salt_SSH_Minion_FW_Rule_201611',
+                                                                                                network_domain=network_domain,
+                                                                                                ip_version='IPV4',
+                                                                                                protocol='TCP',
+                                                                                                source=DimensionDataFirewallAddress(
+                                                                                                    any_ip='ANY',
+                                                                                                    ip_address=public_ip,
+                                                                                                    ip_prefix_size=None,
+                                                                                                    port_begin=None,
+                                                                                                    port_end=None,
+                                                                                                    address_list_id=None,
+                                                                                                    port_list_id=None),
+                                                                                                location=None,
+                                                                                                action='ACCEPT_DECISIVELY',
+                                                                                                enabled='True',
+                                                                                                destination=DimensionDataFirewallAddress(
+                                                                                                    any_ip='ANY',
+                                                                                                    ip_address=public_ip,
+                                                                                                    ip_prefix_size=None,
+                                                                                                    address_list_id=ip_addr_list[0].id,
+                                                                                                    port_begin='22',
+                                                                                                    port_end=None,
+                                                                                                    port_list_id=None),
+                                                                                                status=None),
+                      										position='LAST')
 
-         connection.ex_wait_for_state('NORMAL', connection.ex_get_firewall_rule, poll_interval=6, timeout=60,
-                                      network_domain=network_domain,
-                                      rule_id=fw_resp.id)
     except Exception as exc:
         log.error(
               'Error creating Firewall Rule on DIMENSIONDATA for VM %s\n\n'
@@ -645,7 +674,7 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
               vm_['name'], exc,
               exc_info_on_loglevel=logging.DEBUG
         )
-        return {'status': False, 'public_ip': ''}
+        raise SaltCloudSystemExit(str(exc))
 
     return {'status': True, 'public_ip': public_ip}
 
@@ -728,7 +757,7 @@ def _get_ext_ip():
     Return external IP of the host (master) executing salt-cloud
     :return: json external IP
     '''
-    log.info('Determining external IP...')
+    log.debug('Determining external IP...')
 
     check_ips = ('http://ipecho.net/plain',
                  'http://v4.ident.me')
@@ -739,7 +768,7 @@ def _get_ext_ip():
                 ip_ = req.read().strip()
                 if not _ipv4_addr(ip_):
                     continue
-	    log.info('Found external IP {0}'.format(ip_))
+	    log.debug('Found external IP {0}'.format(ip_))
             return {'external_ip': ip_}
         except (urllib2.HTTPError,
                 urllib2.URLError,
