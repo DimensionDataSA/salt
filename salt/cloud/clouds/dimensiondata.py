@@ -287,7 +287,7 @@ def create(vm_):
         private = node['private_ips']
         public = node['public_ips']
         if is_remote_client(vm_) == 'true':
-         public = [external_ip]
+          public = [external_ip]
 
         if private and not public:
             log.warning(
