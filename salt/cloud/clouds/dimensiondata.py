@@ -30,6 +30,7 @@ import pprint
 import contextlib
 import urllib2
 import time
+import random
 
 # Import salt libs
 from salt.utils.validate.net import ipv4_addr as _ipv4_addr
@@ -40,6 +41,7 @@ try:
     from libcloud.common.dimensiondata import DimensionDataIpAddress
     from libcloud.common.dimensiondata import DimensionDataFirewallRule
     from libcloud.common.dimensiondata import DimensionDataFirewallAddress
+    from libcloud.common.dimensiondata import DimensionDataPort
     from libcloud.compute.base import NodeState
     from libcloud.compute.base import NodeAuthPassword
     from libcloud.compute.types import Provider
@@ -196,34 +198,44 @@ def create(vm_):
             )
 
         try:
+          if vm_['vlan']:
             vlan = [y for y in conn.ex_list_vlans(
                 location=location,
                 network_domain=network_domain)
                     if y.name == vm_['vlan']][0]
+          else:
+            vlan = conn.ex_list_vlans(
+                location=location,
+                network_domain=network_domain)[0]
         except (IndexError, KeyError):
-            # Use the first VLAN in the network domain
             try:
               vlan = conn.ex_create_vlan(
                        network_domain=network_domain,
                        name=vm_['vlan'],
-                       private_ipv4_base_address='192.168.1.0',
+                       private_ipv4_base_address=vm_['vlan_base_ip'],
                        description='Created by SaltStack',
                        private_ipv4_prefix_size=24)
-              #vlan_operation = salt.utils.cloud.wait_for_fun(
-               #   _get_vlan_state,
-               #   timeout=config.get_cloud_config_value(
-               #       'wait_for_vlan_status_timeout', vm_, __opts__, default=3 * 60),
-               #    connection=conn, vlan=vlan)
               _wait_for_async(conn, vlan)
             except Exception as exc:
-                    log.error(
-                        'Error creating VLAN %s on DIMENSIONDATA\n\n'
+		exc_to_str = str(exc)
+      		exc_str_busy = 'RESOURCE_BUSY'
+                exc_str_unexpected = 'UNEXPECTED_ERROR'
+      		if exc_to_str.find(exc_str_busy) == -1 and exc_to_str.find(exc_str_unexpected) == -1:
+                  log.error(
+                      'Error creating VLAN %s on DIMENSIONDATA\n\n'
                         'The following exception was thrown by libcloud when trying to '
                         'run the initial deployment: \n%s',
                         vm_['vlan'], exc,
                         exc_info_on_loglevel=logging.DEBUG
-                    )
-                    return False
+                  )
+                  return False
+		else:	
+                  vlan = [y for y in conn.ex_list_vlans(
+                          location=location,
+                          network_domain=network_domain)
+                          if y.name == vm_['vlan']][0]
+		  _wait_for_async(conn, vlan)
+                  pass
 
         kwargs = {
             'name': vm_['name'],
@@ -234,6 +246,7 @@ def create(vm_):
             'ex_vlan': vlan,
             'ex_is_started': vm_['is_started']
         }
+        time.sleep(random.randint(0, 10))
         data = conn.create_node(**kwargs)
     except Exception as exc:
         log.error(
@@ -245,8 +258,8 @@ def create(vm_):
         )
         return False
 
-    _configure_network(conn=conn, vm_=vm_, network_domain=network_domain)
-
+    external_ip = _configure_network(conn=conn, vm_=vm_, network_domain=network_domain)
+    log.debug('Configured public IP %s on VM %s', external_ip, vm_['name'])
     def __query_node_data(vm_, data):
         running = False
         try:
@@ -272,7 +285,7 @@ def create(vm_):
             return
 
         private = node['private_ips']
-        public = node['public_ips']
+        public = [external_ip]
 
         if private and not public:
             log.warning(
@@ -548,6 +561,7 @@ def _configure_network(**kwargs):
         network_domain = kwargs['network_domain']
 
         if (str(vm_['remote_client']).lower()  == 'true'):
+            time.sleep(random.randint(0, 10))
             ext_ip_addr = _get_ext_ip()
             if (ext_ip_addr['external_ip'] == ''):
               try:
@@ -555,27 +569,28 @@ def _configure_network(**kwargs):
                 destroy(vm_['name'])
               except Exception as exc:
                 raise SaltCloudSystemExit(str(exc))
-            if (_setup_remote_salt_access(network_domain, vm_, conn)['status'] is False):
-              try:
-                # It might be already up, let's destroy it!
-                destroy(vm_['name'])
-              except Exception as exc:
-                raise SaltCloudSystemExit(str(exc))
-        return
+            resp = _setup_remote_salt_access(network_domain, vm_, conn)
+            return resp['public_ip']
+              
 
 def _setup_remote_salt_access(network_domain, vm_, connection):
     '''
-    Configure network for public IP and firewall rules
+    Configure network for public IP and [0]firewall rules
     :param connection: Provider connection
     :return: string Public IP
     '''
     node = show_instance(vm_['name'], 'action')
     private_ips = node['private_ips']
-    log.debug('Creating NAT Rule for VM {0} with IP {1}'.format(vm_['name'], private_ips[0]))
+    port_list_id = ''
+    nat_resp = ''
+    public_ip = ''
+    log.debug('Creating NAT Rule for VM {0} with Private IP {1}'.format(vm_['name'], private_ips[0]))
     try:
       nat_resp = connection.ex_create_nat_rule(network_domain, private_ips[0], '')
       connection.ex_wait_for_state('NORMAL', connection.ex_get_nat_rule, poll_interval=6, timeout=60, network_domain=network_domain, rule_id=nat_resp.id)
-      public_ip = nat_resp.external_ip
+      new_nat_rule = connection.ex_get_nat_rule(network_domain=network_domain, rule_id=nat_resp.id)
+      public_ip = new_nat_rule.external_ip
+      log.debug('Created NAT Rule for VM {0} with Public IP {1}'.format(vm_['name'], public_ip))
     except Exception as exc:
       exc_to_str = str(exc)
       exc_str = 'NO_IP_ADDRESS_AVAILABLE'
@@ -587,7 +602,9 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
             nat_resp = connection.ex_create_nat_rule(network_domain, private_ips[0], '')
             log.debug('Retry adding NAT rule')
             connection.ex_wait_for_state('NORMAL', connection.ex_get_nat_rule, poll_interval=6, timeout=60, network_domain=network_domain, rule_id=nat_resp.id)
-            public_ip = nat_resp.external_ip
+            new_nat_rule = connection.ex_get_nat_rule(network_domain=network_domain, rule_id=nat_resp.id)
+            public_ip = new_nat_rule.external_ip
+            log.debug('Created NAT Rule for VM {0} with Public IP {1}'.format(vm_['name'], public_ip))
 	except Exception as exc:
 	  log.error(
             'Error adding  NAT rule on DIMENSIONDATA for VM %s\n\n'
@@ -597,14 +614,20 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
             exc_info_on_loglevel=logging.DEBUG
           )
       else:
-        log.error(
+        exc_str_unique = 'IP_ADDRESS_NOT_UNIQUE'
+        if exc_to_str.find(exc_str_unique) != -1:
+          nat_rules = connection.ex_list_nat_rules(network_domain=network_domain)
+          nat_rule = [n for n in nat_rules if n.internal_ip == private_ips[0]][0]
+          #nat_rule = connection.ex_get_nat_rule(network_domain=network_domain, rule_id=nat_rule.id)
+          public_ip = nat_rule.external_ip
+        else:
+          log.error(
             'Error creating NAT rule on DIMENSIONDATA for VM %s\n\n'
             'The following exception was thrown by libcloud when trying to '
             'run the initial deployment: \n%s',
             vm_['name'], exc,
             exc_info_on_loglevel=logging.DEBUG
-        )
-        exc_to_str = str(exc)
+          )
         exc_str = 'NO_IP_ADDRESS_AVAILABLE'
         if exc_to_str.find(exc_str) != -1:
           raise SaltCloudSystemExit(str(exc))
@@ -612,20 +635,45 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
     try:
         ip_addr_list = connection.ex_get_ip_address_list(network_domain, 'Salt_Minions_SSH_201611')
         log.debug('Creating IP Address List for VM {0}'.format(vm_['name']))
-        if not ip_addr_list:
-          ip_addr_list_create = connection.ex_create_ip_address_list(network_domain, 'Salt_Minions_SSH_201611', \
+        if nat_resp:
+          if not ip_addr_list:
+            ip_addr_list_create = connection.ex_create_ip_address_list(network_domain, 'Salt_Minions_SSH_201611', \
                                                                      'Created by SaltStack', 'IPV4', \
-                                                                     [DimensionDataIpAddress(begin=nat_resp.internal_ip)])
-        else:
-          ip_addr_list = connection.ex_get_ip_address_list(network_domain, 'Salt_Minions_SSH_201611')
-          ip_addr_col = ip_addr_list[0].ip_address_collection
-          ip_addr_col.append(DimensionDataIpAddress(begin=nat_resp.internal_ip))
-          ip_addr_list_mod = connection.ex_edit_ip_address_list(ex_ip_address_list=ip_addr_list[0].id, description='Generated by SaltStack',\
+                                                                     [DimensionDataIpAddress(begin=public_ip)])
+          else:
+            ip_addr_col = ip_addr_list[0].ip_address_collection
+            ip_addr_col.append(DimensionDataIpAddress(begin=public_ip))
+            ip_addr_list_mod = connection.ex_edit_ip_address_list(ex_ip_address_list=ip_addr_list[0].id, description='Generated by SaltStack',\
                                                                 ip_address_collection=ip_addr_col)
-          ip_addr_list_id = [item[0] for item in ip_addr_list_mod].id
+            ip_addr_list_id = ip_addr_list[0].id
     except Exception as exc:
         log.error(
               'Error creating or modifying IP address list on DIMENSIONDATA for VM %s\n\n'
+              'The following exception was thrown by libcloud when trying to '
+              'run the initial deployment: \n%s',
+              vm_['name'], exc,
+              exc_info_on_loglevel=logging.DEBUG
+        )
+        raise SaltCloudSystemExit(str(exc))
+
+    try:
+        port_lists = connection.ex_list_portlist(ex_network_domain=network_domain)
+        port_list = [p for p in port_lists if p.name == 'Salt_Minions_Salt_Ports_201611']
+        if not port_list:
+          log.debug('Creating Salt allowable ports list for VM {0}'.format(vm_['name']))
+	  ssh_port = DimensionDataPort(begin='22')
+	  amq_port = DimensionDataPort(begin='4505', end='4506')
+          port_collection = [ssh_port, amq_port]
+          port_list_create = connection.ex_create_portlist(ex_network_domain=network_domain, 
+								     name='Salt_Minions_Salt_Ports_201611', 
+                                                                     description='Created by SaltStack',
+                                                                     port_collection=port_collection)
+	  port_lists = connection.ex_list_portlist(ex_network_domain=network_domain)
+          port_list = [p for p in port_lists if p.name == 'Salt_Minions_Salt_Ports_201611']
+          port_list_id = port_list[0].id
+    except Exception as exc:
+        log.error(
+              'Error creating allowable ports list list on DIMENSIONDATA for VM %s\n\n'
               'The following exception was thrown by libcloud when trying to '
               'run the initial deployment: \n%s',
               vm_['name'], exc,
@@ -657,24 +705,29 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
                                                                                                 enabled='True',
                                                                                                 destination=DimensionDataFirewallAddress(
                                                                                                     any_ip='ANY',
-                                                                                                    ip_address=public_ip,
+                                                                                                    ip_address=None,
                                                                                                     ip_prefix_size=None,
                                                                                                     address_list_id=ip_addr_list[0].id,
-                                                                                                    port_begin='22',
+                                                                                                    port_begin=None,
                                                                                                     port_end=None,
-                                                                                                    port_list_id=None),
+                                                                                                    port_list_id=port_list_id),
                                                                                                 status=None),
                       										position='LAST')
 
     except Exception as exc:
-        log.error(
+         exc_to_str = str(exc)
+         exc_str = 'RESOURCE_BUSY'
+         if exc_to_str.find(exc_str) == -1:
+           log.error(
               'Error creating Firewall Rule on DIMENSIONDATA for VM %s\n\n'
               'The following exception was thrown by libcloud when trying to '
               'run the initial deployment: \n%s',
               vm_['name'], exc,
               exc_info_on_loglevel=logging.DEBUG
-        )
-        raise SaltCloudSystemExit(str(exc))
+           )
+           raise SaltCloudSystemExit(str(exc))
+         else:
+           pass
 
     return {'status': True, 'public_ip': public_ip}
 
