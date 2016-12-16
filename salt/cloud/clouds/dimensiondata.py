@@ -198,7 +198,7 @@ def create(vm_):
             )
 
         try:
-          if vm_['vlan']:
+          if get_vlan(vm_):
             vlan = [y for y in conn.ex_list_vlans(
                 location=location,
                 network_domain=network_domain)
@@ -560,7 +560,7 @@ def _configure_network(**kwargs):
         vm_ = kwargs['vm_']
         network_domain = kwargs['network_domain']
 
-        if (str(vm_['remote_client']).lower()  == 'true'):
+        if (is_remote_client(vm_)  == 'true'):
             time.sleep(random.randint(0, 10))
             ext_ip_addr = _get_ext_ip()
             if (ext_ip_addr['external_ip'] == ''):
@@ -856,6 +856,26 @@ def preferred_ip(vm_, ips):
     return False
 
 
+def get_vlan(vm_):
+    '''
+    Return the VLAN name to create or modify. 
+    '' (default)
+    '''
+    return config.get_cloud_config_value(
+        'vlan', vm_, __opts__, default='',
+        search_global=False
+    )
+
+def is_remote_client(vm_):
+    '''
+    Return the flag to determine connection over external or internal (VLAN) network. Either 'false' (default)
+    or 'true'.
+    '''
+    return config.get_cloud_config_value(
+        'remote_client', vm_, __opts__, default='false',
+        search_global=False
+    )
+
 def ssh_interface(vm_):
     '''
     Return the ssh_interface type to connect to. Either 'public_ips' (default)
@@ -865,7 +885,6 @@ def ssh_interface(vm_):
         'ssh_interface', vm_, __opts__, default='public_ips',
         search_global=False
     )
-
 
 def stop(name, call=None):
     '''
