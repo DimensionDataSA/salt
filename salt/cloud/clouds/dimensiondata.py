@@ -193,7 +193,7 @@ def create(vm_):
             network_domain = conn.ex_create_network_domain(
                 location=location,
                 name=vm_['network_domain'],
-                plan='ADVANCED',
+                service_plan='ADVANCED',
                 description=''
             )
 
@@ -257,7 +257,7 @@ def create(vm_):
             exc_info_on_loglevel=logging.DEBUG
         )
         return False
-
+    
     external_ip = _configure_network(conn=conn, vm_=vm_, network_domain=network_domain)
     log.debug('Configured public IP %s on VM %s', external_ip, vm_['name'])
     def __query_node_data(vm_, data):
@@ -285,7 +285,9 @@ def create(vm_):
             return
 
         private = node['private_ips']
-        public = [external_ip]
+        public = node['public_ips']
+        if is_remote_client(vm_) == 'true':
+         public = [external_ip]
 
         if private and not public:
             log.warning(
