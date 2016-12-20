@@ -190,13 +190,40 @@ def create(vm_):
             network_domain = [y for y in network_domains
                               if y.name == vm_['network_domain']][0]
         except IndexError:
+          try:  
             network_domain = conn.ex_create_network_domain(
                 location=location,
                 name=vm_['network_domain'],
                 service_plan='ADVANCED',
-                description=''
+                description='Created by SaltStack'
             )
             conn.ex_wait_for_state('normal',conn.ex_get_network_domain, 10, 120, network_domain.id)
+          except Exception as exc:
+            exc_to_str = str(exc)
+                exc_str_busy = 'RESOURCE_BUSY'
+                exc_str_unexpected = 'UNEXPECTED_ERROR'
+                exc_str_unique = 'NAME_NOT_UNIQUE'
+                
+		if exc_to_str.find(exc_str_unique) != -1:
+		  pass
+		elif exc_to_str.find(exc_str_busy) == -1 and exc_to_str.find(exc_str_unexpected) == -1:
+                  log.error(
+                      'Error creating Network Domain  %s on DIMENSIONDATA\n\n'
+                        'The following exception was thrown by libcloud when trying to '
+                        'run the initial deployment: \n%s',
+                        vm_['network_domain'], exc,
+                        exc_info_on_loglevel=logging.DEBUG
+                  )
+                  return False
+                else:
+                  network_domain = conn.ex_create_network_domain(
+                    location=location,
+                    name=vm_['network_domain'],
+                    service_plan='ADVANCED',
+                    description='Created by SaltStack'
+                  )
+                  conn.ex_wait_for_state('normal',conn.ex_get_network_domain, 10, 120, network_domain.id)
+                  pass  
         try:
           if get_vlan(vm_):
             vlan = [y for y in conn.ex_list_vlans(
