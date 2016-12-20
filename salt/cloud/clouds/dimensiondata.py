@@ -196,7 +196,7 @@ def create(vm_):
                 service_plan='ADVANCED',
                 description=''
             )
-
+            conn.ex_wait_for_state('normal',conn.ex_get_network_domain, 10, 120, network_domain.id)
         try:
           if get_vlan(vm_):
             vlan = [y for y in conn.ex_list_vlans(
