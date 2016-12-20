@@ -185,6 +185,8 @@ def create(vm_):
         location = conn.ex_get_location_by_id(vm_['location'])
         images = conn.list_images(location=location)
         image = [x for x in images if x.id == vm_['image']][0]
+        
+        time.sleep(random.randint(0, 10))
         network_domains = conn.ex_list_network_domains(location=location)
         try:
             network_domain = [y for y in network_domains
