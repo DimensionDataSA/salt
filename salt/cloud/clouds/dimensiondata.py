@@ -259,7 +259,7 @@ def create(vm_):
                             vm_['vlan'], exc,
                             exc_info_on_loglevel=logging.DEBUG
                       )
-                      pass
+                      return False
                     else:
                       log.warning(
                           'Unable to create VLAN %s to due operation contention.\n\n'
