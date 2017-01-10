@@ -253,17 +253,17 @@ def create(vm_):
                 if exc_to_str.find(exc_str_busy) == -1:
                     if exc_to_str.find(exc_str_unexpected) == -1:
                       log.error(
-                          'Error creating VLAN %s on DIMENSIONDATA\n\n'
+                          'Error creating VLAN %s on DIMENSIONDATA. Please try again later.\n\n'
                             'The following exception was thrown by libcloud when trying to '
                             'run the initial deployment: \n%s',
                             vm_['vlan'], exc,
                             exc_info_on_loglevel=logging.DEBUG
                       )
-                      return False
+                      pass
                     else:
                       log.warning(
                           'Unable to create VLAN %s to due operation contention.\n\n'
-                          'Assuming parallel operation succeeded. Continue...',
+                          'Assuming parallel operation succeeded. Continue provisioning...',
                           vm_['vlan'], exc,
                           exc_info_on_loglevel=logging.WARN
                       )
