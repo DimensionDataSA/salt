@@ -42,6 +42,8 @@ try:
     from libcloud.common.dimensiondata import DimensionDataFirewallRule
     from libcloud.common.dimensiondata import DimensionDataFirewallAddress
     from libcloud.common.dimensiondata import DimensionDataPort
+    from libcloud.common.dimensiondata import DimensionDataVlan
+    from libcloud.common.dimensiondata import DimensionDataNetworkDomain
     from libcloud.compute.base import NodeState
     from libcloud.compute.base import NodeAuthPassword
     from libcloud.compute.types import Provider
@@ -185,30 +187,29 @@ def create(vm_):
         location = conn.ex_get_location_by_id(vm_['location'])
         images = conn.list_images(location=location)
         image = [x for x in images if x.id == vm_['image']][0]
-        
-        time.sleep(random.randint(0, 10))
         network_domains = conn.ex_list_network_domains(location=location)
         try:
             network_domain = [y for y in network_domains
                               if y.name == vm_['network_domain']][0]
         except IndexError:
-          try:  
+          try:
+            time.sleep(random.randint(0, 15))
             network_domain = conn.ex_create_network_domain(
                 location=location,
                 name=vm_['network_domain'],
                 service_plan='ADVANCED',
                 description='Created by SaltStack'
             )
-            conn.ex_wait_for_state('normal',conn.ex_get_network_domain, 10, 120, network_domain.id)
+            _wait_for_async(conn, network_domain)
           except Exception as exc:
             exc_to_str = str(exc)
-                exc_str_busy = 'RESOURCE_BUSY'
-                exc_str_unexpected = 'UNEXPECTED_ERROR'
-                exc_str_unique = 'NAME_NOT_UNIQUE'
-                
-		if exc_to_str.find(exc_str_unique) != -1:
-		  pass
-		elif exc_to_str.find(exc_str_busy) == -1 and exc_to_str.find(exc_str_unexpected) == -1:
+            exc_str_busy = 'RESOURCE_BUSY'
+            exc_str_unexpected = 'UNEXPECTED_ERROR'
+            exc_str_unique = 'NAME_NOT_UNIQUE'
+
+            if exc_to_str.find(exc_str_unique) != -1:
+                pass
+            elif exc_to_str.find(exc_str_busy) == -1 and exc_to_str.find(exc_str_unexpected) == -1:
                   log.error(
                       'Error creating Network Domain  %s on DIMENSIONDATA\n\n'
                         'The following exception was thrown by libcloud when trying to '
@@ -217,15 +218,15 @@ def create(vm_):
                         exc_info_on_loglevel=logging.DEBUG
                   )
                   return False
-                else:
+            else:
                   network_domain = conn.ex_create_network_domain(
                     location=location,
                     name=vm_['network_domain'],
                     service_plan='ADVANCED',
                     description='Created by SaltStack'
                   )
-                  conn.ex_wait_for_state('normal',conn.ex_get_network_domain, 10, 120, network_domain.id)
-                  pass  
+                  _wait_for_async(conn, network_domain)
+                  pass
         try:
           if get_vlan(vm_):
             vlan = [y for y in conn.ex_list_vlans(
@@ -246,24 +247,33 @@ def create(vm_):
                        private_ipv4_prefix_size=24)
               _wait_for_async(conn, vlan)
             except Exception as exc:
-		exc_to_str = str(exc)
-      		exc_str_busy = 'RESOURCE_BUSY'
+                exc_to_str = str(exc)
+                exc_str_busy = 'RESOURCE_BUSY'
                 exc_str_unexpected = 'UNEXPECTED_ERROR'
-      		if exc_to_str.find(exc_str_busy) == -1 and exc_to_str.find(exc_str_unexpected) == -1:
-                  log.error(
-                      'Error creating VLAN %s on DIMENSIONDATA\n\n'
-                        'The following exception was thrown by libcloud when trying to '
-                        'run the initial deployment: \n%s',
-                        vm_['vlan'], exc,
-                        exc_info_on_loglevel=logging.DEBUG
-                  )
-                  return False
-		else:	
+                if exc_to_str.find(exc_str_busy) == -1:
+                    if exc_to_str.find(exc_str_unexpected) == -1:
+                      log.error(
+                          'Error creating VLAN %s on DIMENSIONDATA\n\n'
+                            'The following exception was thrown by libcloud when trying to '
+                            'run the initial deployment: \n%s',
+                            vm_['vlan'], exc,
+                            exc_info_on_loglevel=logging.DEBUG
+                      )
+                      return False
+                    else:
+                      log.warning(
+                          'Unable to create VLAN %s to due operation contention.\n\n'
+                          'Assuming parallel operation succeeded. Continue...',
+                          vm_['vlan'], exc,
+                          exc_info_on_loglevel=logging.WARN
+                      )
+                      pass
+                else:
                   vlan = [y for y in conn.ex_list_vlans(
                           location=location,
                           network_domain=network_domain)
                           if y.name == vm_['vlan']][0]
-		  _wait_for_async(conn, vlan)
+                  _wait_for_async(conn, vlan)
                   pass
 
         kwargs = {
@@ -286,11 +296,8 @@ def create(vm_):
             exc_info_on_loglevel=logging.DEBUG
         )
         return False
-    
-    external_ip = _configure_network(conn=conn, vm_=vm_, network_domain=network_domain)
-    log.debug('Configured public IP %s on VM %s', external_ip, vm_['name'])
+
     def __query_node_data(vm_, data):
-        running = False
         try:
             node = show_instance(vm_['name'], 'action')
             running = (node['state'] == NodeState.RUNNING)
@@ -315,7 +322,9 @@ def create(vm_):
 
         private = node['private_ips']
         public = node['public_ips']
-        if is_remote_client(vm_) == 'true':
+        if (ssh_interface(vm_) == 'public_ips'):
+          external_ip = _configure_network(conn=conn, vm_=vm_, network_domain=network_domain)
+          log.debug('Configured public IP %s on VM %s', external_ip, vm_['name'])
           public = [external_ip]
 
         if private and not public:
@@ -591,20 +600,14 @@ def _configure_network(**kwargs):
         vm_ = kwargs['vm_']
         network_domain = kwargs['network_domain']
 
-        if (is_remote_client(vm_)  == 'true'):
-            time.sleep(random.randint(0, 10))
-            ext_ip_addr = _get_ext_ip()
-            if (ext_ip_addr['external_ip'] == ''):
-              try:
-                # It might be already up, let's destroy it!
-                destroy(vm_['name'])
-              except Exception as exc:
-                raise SaltCloudSystemExit(str(exc))
-            resp = _setup_remote_salt_access(network_domain, vm_, conn)
+        ext_ip_addr = _get_ext_ip()
+        if (ext_ip_addr['external_ip'] is not None):
+            resp = _setup_remote_salt_access(ext_ip_addr['external_ip'], network_domain, vm_, conn)
             return resp['public_ip']
-              
 
-def _setup_remote_salt_access(network_domain, vm_, connection):
+        return None
+
+def _setup_remote_salt_access(external_ip, network_domain, vm_, connection):
     '''
     Configure network for public IP and [0]firewall rules
     :param connection: Provider connection
@@ -616,6 +619,7 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
     nat_resp = ''
     public_ip = ''
     log.debug('Creating NAT Rule for VM {0} with Private IP {1}'.format(vm_['name'], private_ips[0]))
+    time.sleep(random.randint(0, 15))
     try:
       nat_resp = connection.ex_create_nat_rule(network_domain, private_ips[0], '')
       connection.ex_wait_for_state('NORMAL', connection.ex_get_nat_rule, poll_interval=6, timeout=60, network_domain=network_domain, rule_id=nat_resp.id)
@@ -626,18 +630,18 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
       exc_to_str = str(exc)
       exc_str = 'NO_IP_ADDRESS_AVAILABLE'
       if exc_to_str.find(exc_str) != -1:
-	try:
+        try:
           log.debug('Adding Public IP block')
-	  public_ip_rsp = connection.ex_add_public_ip_block_to_network_domain(network_domain)
+          public_ip_rsp = connection.ex_add_public_ip_block_to_network_domain(network_domain)
           if(public_ip_rsp.status == 'NORMAL'):
-            nat_resp = connection.ex_create_nat_rule(network_domain, private_ips[0], '')
-            log.debug('Retry adding NAT rule')
-            connection.ex_wait_for_state('NORMAL', connection.ex_get_nat_rule, poll_interval=6, timeout=60, network_domain=network_domain, rule_id=nat_resp.id)
-            new_nat_rule = connection.ex_get_nat_rule(network_domain=network_domain, rule_id=nat_resp.id)
-            public_ip = new_nat_rule.external_ip
-            log.debug('Created NAT Rule for VM {0} with Public IP {1}'.format(vm_['name'], public_ip))
-	except Exception as exc:
-	  log.error(
+              nat_resp = connection.ex_create_nat_rule(network_domain, private_ips[0], '')
+              log.debug('Retry adding NAT rule')
+              connection.ex_wait_for_state('NORMAL', connection.ex_get_nat_rule, poll_interval=6, timeout=60, network_domain=network_domain, rule_id=nat_resp.id)
+              new_nat_rule = connection.ex_get_nat_rule(network_domain=network_domain, rule_id=nat_resp.id)
+              public_ip = new_nat_rule.external_ip
+              log.debug('Created NAT Rule for VM {0} with Public IP {1}'.format(vm_['name'], public_ip))
+        except Exception as exc:
+          log.error(
             'Error adding  NAT rule on DIMENSIONDATA for VM %s\n\n'
             'The following exception was thrown by libcloud when trying to '
             'run the initial deployment: \n%s',
@@ -664,19 +668,19 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
           raise SaltCloudSystemExit(str(exc))
 
     try:
-        ip_addr_list = connection.ex_get_ip_address_list(network_domain, 'Salt_Minions_SSH_201611')
+        ip_addr_list = connection.ex_get_ip_address_list(network_domain, 'Salt_Minions_IPs_SSH_201611')
         log.debug('Creating IP Address List for VM {0}'.format(vm_['name']))
-        if nat_resp:
-          if not ip_addr_list:
-            ip_addr_list_create = connection.ex_create_ip_address_list(network_domain, 'Salt_Minions_SSH_201611', \
+        if not ip_addr_list:
+          ip_addr_list_create = connection.ex_create_ip_address_list(network_domain, 'Salt_Minions_IPs_SSH_201611', \
                                                                      'Created by SaltStack', 'IPV4', \
                                                                      [DimensionDataIpAddress(begin=public_ip)])
-          else:
-            ip_addr_col = ip_addr_list[0].ip_address_collection
-            ip_addr_col.append(DimensionDataIpAddress(begin=public_ip))
-            ip_addr_list_mod = connection.ex_edit_ip_address_list(ex_ip_address_list=ip_addr_list[0].id, description='Generated by SaltStack',\
-                                                                ip_address_collection=ip_addr_col)
-            ip_addr_list_id = ip_addr_list[0].id
+        else:
+          log.debug(' IP Address List for VM {0} is {1}'.format(vm_['name'], ip_addr_list[0].id))
+          ip_addr_col = ip_addr_list[0].ip_address_collection
+          ip_addr_col.append(DimensionDataIpAddress(begin=public_ip, end=None, prefix_size=None))
+          log.debug(ip_addr_col)
+          ip_addr_list_mod = connection.ex_edit_ip_address_list(ex_ip_address_list=ip_addr_list[0].id, description='Generated by SaltStack',\
+                                                                ip_address_collection=ip_addr_col, child_ip_address_lists=None)
     except Exception as exc:
         log.error(
               'Error creating or modifying IP address list on DIMENSIONDATA for VM %s\n\n'
@@ -692,14 +696,14 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
         port_list = [p for p in port_lists if p.name == 'Salt_Minions_Salt_Ports_201611']
         if not port_list:
           log.debug('Creating Salt allowable ports list for VM {0}'.format(vm_['name']))
-	  ssh_port = DimensionDataPort(begin='22')
-	  amq_port = DimensionDataPort(begin='4505', end='4506')
+          ssh_port = DimensionDataPort(begin='22')
+          amq_port = DimensionDataPort(begin='4505', end='4506')
           port_collection = [ssh_port, amq_port]
           port_list_create = connection.ex_create_portlist(ex_network_domain=network_domain, 
 								     name='Salt_Minions_Salt_Ports_201611', 
                                                                      description='Created by SaltStack',
                                                                      port_collection=port_collection)
-	  port_lists = connection.ex_list_portlist(ex_network_domain=network_domain)
+          port_lists = connection.ex_list_portlist(ex_network_domain=network_domain)
           port_list = [p for p in port_lists if p.name == 'Salt_Minions_Salt_Ports_201611']
           port_list_id = port_list[0].id
     except Exception as exc:
@@ -717,15 +721,15 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
         fw_rules = connection.ex_list_firewall_rules(network_domain)
         fw_rule = filter(lambda x: x.name == 'Salt_SSH_Minion_FW_Rule_201611', fw_rules)
         if not fw_rule:
-         ip_addr_list = connection.ex_get_ip_address_list(network_domain, 'Salt_Minions_SSH_201611')
+         ip_addr_list = connection.ex_get_ip_address_list(network_domain, 'Salt_Minions_IPs_SSH_201611')
          fw_resp = connection.ex_create_firewall_rule(network_domain, DimensionDataFirewallRule(id=None, 
-												name='Salt_SSH_Minion_FW_Rule_201611',
+												                                                name='Salt_SSH_Minion_FW_Rule_201611',
                                                                                                 network_domain=network_domain,
                                                                                                 ip_version='IPV4',
                                                                                                 protocol='TCP',
                                                                                                 source=DimensionDataFirewallAddress(
-                                                                                                    any_ip='ANY',
-                                                                                                    ip_address=public_ip,
+                                                                                                    any_ip=None,
+                                                                                                    ip_address=external_ip,
                                                                                                     ip_prefix_size=None,
                                                                                                     port_begin=None,
                                                                                                     port_end=None,
@@ -735,15 +739,16 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
                                                                                                 action='ACCEPT_DECISIVELY',
                                                                                                 enabled='True',
                                                                                                 destination=DimensionDataFirewallAddress(
-                                                                                                    any_ip='ANY',
+                                                                                                    any_ip=None,
                                                                                                     ip_address=None,
                                                                                                     ip_prefix_size=None,
-                                                                                                    address_list_id=ip_addr_list[0].id,
+                                                                                                    address_list_id=
+                                                                                                    ip_addr_list[0].id,
                                                                                                     port_begin=None,
                                                                                                     port_end=None,
                                                                                                     port_list_id=port_list_id),
                                                                                                 status=None),
-                      										position='LAST')
+                      										                                    position='LAST')
 
     except Exception as exc:
          exc_to_str = str(exc)
@@ -756,7 +761,6 @@ def _setup_remote_salt_access(network_domain, vm_, connection):
               vm_['name'], exc,
               exc_info_on_loglevel=logging.DEBUG
            )
-           raise SaltCloudSystemExit(str(exc))
          else:
            pass
 
@@ -773,21 +777,21 @@ def _get_vlan_state(**kwargs):
     vlan = kwargs['vlan']
 
     try:
-	state= connection.ex_get_vlan(vlan.id).status
-        running = (state == NodeState.RUNNING)
-        log.debug(
+      state= connection.ex_get_vlan(vlan.id).status
+      running = (state == NodeState.RUNNING)
+      log.debug(
             'Running operation for deploying vlan \nname:%s\nstate: %s',
             vlan.name,
             state
-        )
+      )
     except Exception as err:
-        log.error(
+      log.error(
             'Failed to check Vlan %s state: %s',  vlan.name, state, err,
             # Show the traceback if the debug logging level is enabled
             exc_info_on_loglevel=logging.DEBUG
-        )
-        # Trigger a failure in the wait for fun function
-        return False
+      )
+      # Trigger a failure in the wait for fun function
+      return False
 
     if not running:
         # Still not running, trigger another iteration
@@ -801,6 +805,9 @@ def _wait_for_async(conn, obj):
     count = 0
     log.debug('Waiting for asynchronous operation to complete')
     not_running = True
+    resource_type = 'Vlan'
+    state = ''
+
 
     while not_running:
         count = count + 1
@@ -808,7 +815,12 @@ def _wait_for_async(conn, obj):
             raise ValueError('Timed out waiting for async operation to complete.')
         time.sleep(10)
         try:
-            state = conn.ex_get_vlan(obj.id).status
+            if isinstance(obj, DimensionDataVlan):
+                state = conn.ex_get_vlan(obj.id).status
+            elif isinstance(obj, DimensionDataNetworkDomain):
+                state = conn.ex_get_network_domain(obj.id).status
+                resource_type = 'Network Domain'
+
             not_running = not (state == 'NORMAL')
             log.debug(
                 'Running operation for deploying resource \nname:%s\nstate: %s',
@@ -818,7 +830,7 @@ def _wait_for_async(conn, obj):
 	  
         except Exception as err:
             log.error(
-                'Fatal excepting while while checking resource %s state: %s', obj.name, state, err,
+                'Fatal excepting while while checking resource type %s: \n%s with state: %s', resource_type, obj.name, state, err,
                 # Show the traceback if the debug logging level is enabled
                 exc_info_on_loglevel=logging.DEBUG
             )
@@ -897,15 +909,6 @@ def get_vlan(vm_):
         search_global=False
     )
 
-def is_remote_client(vm_):
-    '''
-    Return the flag to determine connection over external or internal (VLAN) network. Either 'false' (default)
-    or 'true'.
-    '''
-    return config.get_cloud_config_value(
-        'remote_client', vm_, __opts__, default='false',
-        search_global=False
-    )
 
 def ssh_interface(vm_):
     '''
