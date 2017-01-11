@@ -679,7 +679,7 @@ def _setup_remote_salt_access(external_ip, network_domain, vm_, connection):
           ip_addr_col = ip_addr_list[0].ip_address_collection
           existing_ip = True
           for address in ip_addr_col:
-              if address.public_ip == public_ip:
+              if address.begin == public_ip:
                   existing_ip = False
           if existing_ip:
             ip_addr_col.append(DimensionDataIpAddress(begin=public_ip, end=None, prefix_size=None))
